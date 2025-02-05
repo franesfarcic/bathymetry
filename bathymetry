@@ -1,0 +1,128 @@
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter
+from scipy.interpolate import RegularGridInterpolator
+
+# =============================================================================
+# 1. Učitavanje i obrada bathymetry podataka
+# =============================================================================
+
+
+# Definiramo granice Jadranskog mora:
+# Geografska dužina: 12° do 20°, geografska širina: 40° do 46°
+ds = xr.open_dataset("adriatic_bathymetry.nc")
+
+ds_adriatic = ds.sel(lon=slice(12, 20), lat=slice(40, 46))
+
+# Pretpostavljamo da se bathymetry podaci nalaze u varijabli 'elevation'
+# Ako je naziv drugačiji, prilagodite naziv varijable!
+bathymetry = ds_adriatic['depth']  
+
+#elevation umisto depth
+
+# Izvlačenje koordinata i kreiranje mreže
+lon = ds_adriatic['lon'].values
+lat = ds_adriatic['lat'].values
+Lon, Lat = np.meshgrid(lon, lat)
+
+# Prikaz bathymetry podataka (konturna mapa)
+plt.figure(figsize=(10, 8))
+contour = plt.contourf(Lon, Lat, bathymetry, cmap='viridis')
+plt.colorbar(contour, label='Elevation (m)')
+plt.title('Bathymetry Jadranskog mora')
+plt.xlabel('Geografska dužina [°]')
+plt.ylabel('Geografska širina [°]')
+plt.show()
+
+# =============================================================================
+# 2. Simulacija morskih struja korištenjem stohastičkih metoda
+# =============================================================================
+# Generiramo stohastičko polje brzina (u i v komponente) pomoću bijelog šuma i gaussovog filtriranja
+np.random.seed(42)  # radi reprodukcije rezultata
+shape = bathymetry.shape
+
+# Generiranje bijelog šuma za u i v komponente
+u_noise = np.random.randn(*shape)
+v_noise = np.random.randn(*shape)
+
+# Primjena Gaussian filtera za uvođenje prostorne korelacije
+sigma = 3  # parametar koji određuje korelaciju (prilagodite po potrebi)
+u_field = gaussian_filter(u_noise, sigma=sigma)
+v_field = gaussian_filter(v_noise, sigma=sigma)
+
+# Skaliranje brzinskog polja na realistične vrijednosti (m/s)
+velocity_scale = 0.2  # prosječna brzina struje, npr. 0.2 m/s (prilagodite)
+u_field = u_field / np.max(np.abs(u_field)) * velocity_scale
+v_field = v_field / np.max(np.abs(v_field)) * velocity_scale
+
+# Prikaz simuliranog polja morskih struja nad bathymetry podacima
+plt.figure(figsize=(10, 8))
+plt.contourf(Lon, Lat, bathymetry, cmap='viridis', alpha=0.6)
+# Prikazujemo svaku petu točku radi preglednosti (mijenjajte korak ako je potrebno)
+plt.quiver(Lon[::5, ::5], Lat[::5, ::5], u_field[::5, ::5], v_field[::5, ::5], 
+           color='white', pivot='middle')
+plt.title('Simulirane morske struje nad bathymetry podacima (Jadran)')
+plt.xlabel('Geografska dužina [°]')
+plt.ylabel('Geografska širina [°]')
+plt.colorbar(label='Elevation (m)')
+plt.show()
+
+# =============================================================================
+# 3. Simulacija putanja čestica (Euler–Maruyama integracija)
+# =============================================================================
+# Ovdje simuliramo advekciju čestica kroz statično polje struja uz dodatak stohastičke diffuzije.
+
+dt = 0.1       # vremenski korak (u vremenskim jedinicama, npr. satima ili minutama)
+num_steps = 200  # broj koraka simulacije
+
+# Definiramo početne pozicije nekoliko čestica (npr. unutar područja Jadranskog mora)
+num_particles = 5
+initial_positions = np.array([
+    [14, 42],
+    [15, 43],
+    [16, 44],
+    [17, 43],
+    [18, 42]
+], dtype=float)
+
+# Kako bismo dobili brzinu u proizvoljnim točkama, kreiramo interpolatore za u i v komponente
+u_interp = RegularGridInterpolator((lat, lon), u_field)
+v_interp = RegularGridInterpolator((lat, lon), v_field)
+
+# Inicijalizacija matrice za pohranu putanja čestica: (particle, time_step, [lon, lat])
+trajectories = np.zeros((num_particles, num_steps, 2))
+trajectories[:, 0, :] = initial_positions
+
+# Diffuzijski koeficijent (predstavlja dodatnu slučajnu diffuziju/subgrid turbulentnost)
+D = 0.01  # odabrana vrijednost, prilagodite po potrebi
+sqrt_2D_dt = np.sqrt(2 * D * dt)
+
+# Simulacija putanja čestica (Euler–Maruyama metoda)
+for i in range(1, num_steps):
+    for p in range(num_particles):
+        current_pos = trajectories[p, i-1, :]
+        # Dohvat brzinskih komponenti u trenutnoj poziciji (interpolacija)
+        u_val = u_interp(current_pos)
+        v_val = v_interp(current_pos)
+        velocity = np.array([u_val, v_val])
+        # Stohastički doprinos (gaussovski šum)
+        noise = np.random.randn(2) * sqrt_2D_dt
+        # Ažuriranje položaja
+        new_pos = current_pos + velocity * dt + noise
+        trajectories[p, i, :] = new_pos
+
+# Prikaz rezultata: putanje čestica preko bathymetry i polja struja
+plt.figure(figsize=(10, 8))
+plt.contourf(Lon, Lat, bathymetry, cmap='viridis', alpha=0.6)
+plt.quiver(Lon[::5, ::5], Lat[::5, ::5], u_field[::5, ::5], v_field[::5, ::5], 
+           color='white', alpha=0.5, pivot='middle')
+for p in range(num_particles):
+    plt.plot(trajectories[p, :, 0], trajectories[p, :, 1], label=f'Čestica {p+1}', lw=2)
+    plt.scatter(initial_positions[p, 0], initial_positions[p, 1], color='red', s=50, zorder=5)
+plt.title('Simulirane putanje čestica u stohastički generiranom polju morskih struja')
+plt.xlabel('Geografska dužina [°]')
+plt.ylabel('Geografska širina [°]')
+plt.legend()
+plt.show()
+
